@@ -1,0 +1,23 @@
+{
+  "name": "electron-mqtt-chat-demo",
+  "version": "1.0.0",
+  "description": "Simple Electron MQTT WebSocket chat demo using a public broker.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "mqtt",
+    "chat",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "latest"
+  },
+  "dependencies": {
+    "mqtt": "latest"
+  }
+}

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https: http: data:; style-src 'self'; script-src 'self'; connect-src 'self' ws://broker.hivemq.com:8000 wss://broker.hivemq.com:8884 ws://broker.mqttdashboard.com:8000;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MQTT Chat Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="join-panel" aria-label="聊天室設定">
+        <div>
+          <h1>MQTT Chat</h1>
+          <p class="subtitle">Public broker WebSocket demo</p>
+        </div>
+
+        <form id="joinForm" class="join-form">
+          <label>
+            <span>Invite code</span>
+            <input id="inviteCode" name="inviteCode" type="text" value="demo-room" maxlength="64" autocomplete="off" required />
+          </label>
+
+          <label>
+            <span>User</span>
+            <input id="userName" name="userName" type="text" value="Guest" maxlength="32" autocomplete="off" required />
+          </label>
+
+          <label class="broker-field">
+            <span>Broker</span>
+            <input id="brokerUrl" name="brokerUrl" type="url" value="wss://broker.hivemq.com:8884/mqtt" required />
+          </label>
+
+          <button id="joinButton" type="submit">加入</button>
+          <button id="leaveButton" type="button" class="secondary" disabled>離開</button>
+        </form>
+      </section>
+
+      <section class="chat-panel" aria-label="聊天室">
+        <header class="chat-header">
+          <div>
+            <p class="label">Topic subscription</p>
+            <p id="topicLabel" class="topic">chat/demo-room/#</p>
+          </div>
+          <div id="statusBadge" class="status disconnected">未連線</div>
+        </header>
+
+        <div id="messageList" class="message-list" aria-live="polite"></div>
+
+        <form id="messageForm" class="composer">
+          <input id="messageInput" type="text" placeholder="輸入訊息，按 Enter 傳送" autocomplete="off" disabled />
+          <button id="sendButton" type="submit" disabled>傳送</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
