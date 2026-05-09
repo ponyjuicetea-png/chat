@@ -254,9 +254,17 @@ label {
   border-radius: 6px;
 }
 
+.image-caption {
+  padding: 7px 2px 2px;
+  color: #536170;
+  font-size: 0.8rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
   padding: 14px;
   border-top: 1px solid #e1e7ec;

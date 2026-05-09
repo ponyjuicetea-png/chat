@@ -1,4 +1,7 @@
+import base64
+import binascii
 import json
+import mimetypes
 import random
 import re
 import ssl
@@ -6,13 +9,25 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 try:
     import paho.mqtt.client as mqtt
-    from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
+    from PyQt6.QtCore import (
+        QBuffer,
+        QByteArray,
+        QIODevice,
+        QObject,
+        QSize,
+        Qt,
+        QTimer,
+        pyqtSignal,
+    )
+    from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import (
         QApplication,
+        QFileDialog,
         QFrame,
         QGridLayout,
         QHBoxLayout,
@@ -34,6 +49,16 @@ except ImportError as error:
 
 DEFAULT_BROKER_URL = "wss://broker.emqx.io:8084/mqtt"
 INVITE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_IMAGE_BYTES = 768 * 1024
+IMAGE_QUALITY_STEPS = (86, 78, 70, 62, 54, 46, 38)
+IMAGE_SIDE_STEPS = (1600, 1280, 1024, 800, 640, 480, 360)
+SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+}
 
 
 @dataclass
@@ -107,6 +132,72 @@ class MqttBridge(QObject):
                 "content": content,
             }
         )
+
+    def send_image(self, file_path: str):
+        path = Path(file_path)
+        data = path.read_bytes()
+        mime_type = mimetypes.guess_type(path.name)[0]
+        if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+            raise ValueError("僅支援 PNG、JPG、GIF、WebP 或 BMP 圖片。")
+
+        original_size = len(data)
+        compressed = False
+        if original_size > MAX_IMAGE_BYTES:
+            data, mime_type = self._compress_image(path)
+            compressed = True
+
+        encoded = base64.b64encode(data).decode("ascii")
+        self.publish_message(
+            {
+                "type": "image",
+                "user": self.user,
+                "url": f"data:{mime_type};base64,{encoded}",
+                "filename": path.name,
+                "size": len(data),
+                "originalSize": original_size,
+                "compressed": compressed,
+            }
+        )
+
+    def _compress_image(self, path: Path):
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            raise ValueError("圖片太大且無法壓縮，請改選其他圖片。")
+
+        best_data = b""
+        for side in IMAGE_SIDE_STEPS:
+            scaled = pixmap
+            if max(pixmap.width(), pixmap.height()) > side:
+                scaled = pixmap.scaled(
+                    side,
+                    side,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+
+            for quality in IMAGE_QUALITY_STEPS:
+                data = self._pixmap_to_jpeg_bytes(scaled, quality)
+                if data and (not best_data or len(data) < len(best_data)):
+                    best_data = data
+                if data and len(data) <= MAX_IMAGE_BYTES:
+                    return data, "image/jpeg"
+
+        if best_data:
+            return best_data, "image/jpeg"
+
+        raise ValueError("圖片壓縮失敗，請改選其他圖片。")
+
+    def _pixmap_to_jpeg_bytes(self, pixmap: QPixmap, quality: int) -> bytes:
+        byte_array = QByteArray()
+        buffer = QBuffer(byte_array)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        ok = pixmap.save(buffer, "JPG", quality)
+        buffer.close()
+
+        if not ok:
+            return b""
+
+        return bytes(byte_array)
 
     def publish_message(self, message: dict):
         if not self.client or not self.client.is_connected() or not self.room_ready:
@@ -302,7 +393,15 @@ class GuideCard(QFrame):
 
 
 class MessageBubble(QFrame):
-    def __init__(self, user: str, time_label: str, body: str, is_mine: bool, kind: str):
+    def __init__(
+        self,
+        user: str,
+        time_label: str,
+        body: str,
+        is_mine: bool,
+        kind: str,
+        image_src: str = "",
+    ):
         super().__init__()
         self.setObjectName("messageBubble")
         self.setProperty("mine", "true" if is_mine else "false")
@@ -316,6 +415,14 @@ class MessageBubble(QFrame):
         meta = QLabel(f"{user} · {time_label}")
         meta.setObjectName("messageMeta")
 
+        layout.addWidget(meta)
+        if kind == "image" and image_src:
+            self._add_image_content(layout, body, image_src)
+        else:
+            content = self._build_text_label(body, kind)
+            layout.addWidget(content)
+
+    def _build_text_label(self, body: str, kind: str) -> QLabel:
         content = QLabel(body)
         content.setObjectName("messageBody")
         content.setWordWrap(True)
@@ -325,8 +432,47 @@ class MessageBubble(QFrame):
             content.setTextFormat(Qt.TextFormat.RichText)
             content.setOpenExternalLinks(True)
 
-        layout.addWidget(meta)
+        return content
+
+    def _add_image_content(self, layout: QVBoxLayout, body: str, image_src: str):
+        pixmap = self._pixmap_from_data_url(image_src)
+        if pixmap and not pixmap.isNull():
+            image = QLabel()
+            image.setObjectName("messageImage")
+            image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image.setPixmap(
+                pixmap.scaled(
+                    420,
+                    300,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            layout.addWidget(image)
+
+            if body:
+                caption = self._build_text_label(body, "text")
+                layout.addWidget(caption)
+            return
+
+        content = self._build_text_label(body, "image")
         layout.addWidget(content)
+
+    def _pixmap_from_data_url(self, image_src: str):
+        if not image_src.startswith("data:image/") or ";base64," not in image_src:
+            return None
+
+        try:
+            encoded = image_src.split(",", 1)[1]
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, IndexError, binascii.Error):
+            return None
+
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            return None
+
+        return pixmap
 
 
 class ChatWindow(QMainWindow):
@@ -349,6 +495,7 @@ class ChatWindow(QMainWindow):
         self.topic_label = QLabel("chat/demo-room/#")
         self.message_list = QListWidget()
         self.message_input = QLineEdit()
+        self.image_button = QPushButton("圖片")
         self.send_button = QPushButton("傳送")
 
         self._build_ui()
@@ -442,6 +589,7 @@ class ChatWindow(QMainWindow):
         composer_layout.setSpacing(10)
         self.message_input.setPlaceholderText("輸入訊息，按 Enter 傳送")
         composer_layout.addWidget(self.message_input)
+        composer_layout.addWidget(self.image_button)
         composer_layout.addWidget(self.send_button)
 
         chat_layout.addWidget(header)
@@ -603,6 +751,7 @@ class ChatWindow(QMainWindow):
         self.join_button.clicked.connect(self.join_room)
         self.leave_button.clicked.connect(self.leave_room)
         self.send_button.clicked.connect(self.send_message)
+        self.image_button.clicked.connect(self.send_image)
         self.message_input.returnPressed.connect(self.send_message)
         self.invite_input.textChanged.connect(self.update_topic_label)
         self.bridge.status_changed.connect(self.on_status_changed)
@@ -637,6 +786,21 @@ class ChatWindow(QMainWindow):
             self.bridge.send_text(text)
             self.message_input.clear()
         except RuntimeError as error:
+            self.show_system_message(str(error))
+
+    def send_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "選擇圖片",
+            "",
+            "圖片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;所有檔案 (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            self.bridge.send_image(file_path)
+        except (OSError, RuntimeError, ValueError) as error:
             self.show_system_message(str(error))
 
     def update_topic_label(self):
@@ -676,8 +840,13 @@ class ChatWindow(QMainWindow):
         is_mine = raw_user == self.current_user
 
         if message_type == "image":
-            url = self._escape_html(payload.get("url", ""))
-            body = f'圖片 URL：<a href="{url}">{url}</a>'
+            raw_url = str(payload.get("url") or "")
+            filename = self._escape_html(payload.get("filename", "圖片"))
+            if raw_url.startswith("data:image/"):
+                body = filename
+            else:
+                url = self._escape_html(raw_url)
+                body = f'圖片 URL：<a href="{url}">{url}</a>'
         elif message_type == "file":
             filename = self._escape_html(payload.get("filename", "file"))
             url = self._escape_html(payload.get("url", ""))
@@ -685,7 +854,14 @@ class ChatWindow(QMainWindow):
         else:
             body = self._escape_html(payload.get("content", ""))
 
-        self.add_bubble(raw_user, message.received_at, body, is_mine, message_type)
+        self.add_bubble(
+            raw_user,
+            message.received_at,
+            body,
+            is_mine,
+            message_type,
+            str(payload.get("url") or "") if message_type == "image" else "",
+        )
 
     def show_empty_hint(self):
         if self.message_list.count() > 0:
@@ -708,8 +884,16 @@ class ChatWindow(QMainWindow):
             "system",
         )
 
-    def add_bubble(self, user: str, time_label: str, body: str, is_mine: bool, kind: str):
-        bubble = MessageBubble(user, time_label, body, is_mine, kind)
+    def add_bubble(
+        self,
+        user: str,
+        time_label: str,
+        body: str,
+        is_mine: bool,
+        kind: str,
+        image_src: str = "",
+    ):
+        bubble = MessageBubble(user, time_label, body, is_mine, kind, image_src)
         container = QWidget()
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
@@ -731,6 +915,7 @@ class ChatWindow(QMainWindow):
 
     def _set_connected(self, connected: bool):
         self.message_input.setEnabled(connected)
+        self.image_button.setEnabled(connected)
         self.send_button.setEnabled(connected)
         self.leave_button.setEnabled(connected)
         self.join_button.setEnabled(not connected)
@@ -746,6 +931,7 @@ class ChatWindow(QMainWindow):
         actively_trying = state in {"connecting", "subscribing", "offline", "error"}
 
         self.message_input.setEnabled(connected)
+        self.image_button.setEnabled(connected)
         self.send_button.setEnabled(connected)
         self.leave_button.setEnabled(connected or actively_trying)
         self.join_button.setEnabled(not connected and not actively_trying)

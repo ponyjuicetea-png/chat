@@ -60,6 +60,12 @@ function closeClient() {
   joinedRoom = null;
 }
 
+function ensureCanPublish() {
+  if (!client || !client.connected || !joinedRoom) {
+    throw new Error('尚未連上聊天室。');
+  }
+}
+
 contextBridge.exposeInMainWorld('chatMqtt', {
   connect({ brokerUrl, inviteCode, user }) {
     const room = String(inviteCode || '').trim();
@@ -181,9 +187,7 @@ contextBridge.exposeInMainWorld('chatMqtt', {
 
   sendText(content) {
     const text = String(content || '').trim();
-    if (!client || !client.connected || !joinedRoom) {
-      throw new Error('尚未連上聊天室。');
-    }
+    ensureCanPublish();
 
     if (!text) {
       return;
@@ -198,10 +202,29 @@ contextBridge.exposeInMainWorld('chatMqtt', {
     client.publish(`chat/${joinedRoom}/msg`, JSON.stringify(message), { qos: 0, retain: false });
   },
 
-  publishMessage(message) {
-    if (!client || !client.connected || !joinedRoom) {
-      throw new Error('尚未連上聊天室。');
+  sendImage({ url, filename, size, originalSize, compressed }) {
+    const imageUrl = String(url || '');
+    ensureCanPublish();
+
+    if (!imageUrl.startsWith('data:image/') || !imageUrl.includes(';base64,')) {
+      throw new Error('圖片格式不正確。');
     }
+
+    const message = {
+      type: 'image',
+      user: displayName,
+      url: imageUrl,
+      filename: String(filename || 'image'),
+      size: Number(size || 0),
+      originalSize: Number(originalSize || size || 0),
+      compressed: Boolean(compressed)
+    };
+
+    client.publish(`chat/${joinedRoom}/msg`, JSON.stringify(message), { qos: 0, retain: false });
+  },
+
+  publishMessage(message) {
+    ensureCanPublish();
 
     client.publish(`chat/${joinedRoom}/msg`, JSON.stringify(message), { qos: 0, retain: false });
   },
